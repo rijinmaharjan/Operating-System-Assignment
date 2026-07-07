@@ -3,7 +3,7 @@
 ## Student Details
 * **Name:** Rijin Maharjan
 * **Batch:** 37 "A"
-* **Subject:** AI
+* **Faculty:** AI
 * **Student ID:** 240434
 
 ---
