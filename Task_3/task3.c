@@ -224,3 +224,293 @@ int has_permission(User *u, FileMeta *f, char action) {
 int is_owner_or_admin(User *u, FileMeta *f) {
     return (strcmp(u->username, f->owner) == 0) || (strcmp(u->group, "security") == 0);
 }
+
+/* ======================================================================
+ * REQUIREMENT 4: ENCRYPTION / DECRYPTION FOR SENSITIVE FILES
+ * ======================================================================
+ * This XORs every byte of the file against a repeating key. XOR is
+ * symmetric, so running this function twice with the same key gets you
+ * back to the original bytes - that's why encrypt and decrypt below both
+ * just call this same helper.
+ *
+ * Why this is only a teaching example and NOT real security:
+ *   - the key is a fixed string baked into the program, so anyone who
+ *     has the source (or decompiles the binary) has the key
+ *   - single-byte-repeating XOR is one of the very first ciphers people
+ *     learn to break with basic frequency analysis
+ *   - there's no authentication tag, so a file can be silently corrupted
+ *     or tampered with and nothing would detect it
+ * A real system would use an authenticated cipher like AES-256-GCM (via
+ * a library such as OpenSSL/libsodium) with a per-file random key that
+ * is itself protected by the user's password through a slow key-derivation
+ * function such as Argon2 or PBKDF2 - not baked into the source.
+ * -------------------------------------------------------------------*/
+void xor_crypt(unsigned char *data, size_t len, const char *key) {
+    size_t key_len = strlen(key);
+    for (size_t i = 0; i < len; i++) {
+        data[i] ^= (unsigned char)key[i % key_len];
+    }
+}
+
+/* ======================================================================
+ * REQUIREMENT 1: FILE CREATE / READ / WRITE / DELETE OPERATIONS
+ * (each function below also enforces the Requirement 3 permission check
+ * before doing anything, and calls log_action() for Requirement 5)
+ * ===================================================================== */
+
+void vault_path(const char *filename, char *out, size_t out_size) {
+    snprintf(out, out_size, "%s/%s", VAULT_DIR, filename);
+}
+
+void op_create_file(void) {
+    char filename[MAX_FILENAME];
+    printf("Filename to create: ");
+    if (!fgets(filename, sizeof(filename), stdin)) return;
+    strip_newline(filename);
+
+    if (find_file(filename)) {
+        printf("A file with that name already exists in the vault.\n");
+        log_action(current_user->username, "CREATE", filename, 0);
+        return;
+    }
+    if (file_count >= MAX_FILES) {
+        printf("Vault is full (demo limit reached).\n");
+        return;
+    }
+
+    char path[MAX_FILENAME + 16];
+    vault_path(filename, path, sizeof(path));
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        printf("Could not create file on disk.\n");
+        log_action(current_user->username, "CREATE", filename, 0);
+        return;
+    }
+    fclose(f);
+
+    FileMeta *m = &files[file_count++];
+    strncpy(m->filename, filename, MAX_FILENAME - 1);
+    strncpy(m->owner, current_user->username, MAX_NAME_LEN - 1);
+    strncpy(m->group, current_user->group, MAX_NAME_LEN - 1);
+    m->perm_owner = 6;  /* rw- : owner can read/write, not "execute" */
+    m->perm_group = 4;  /* r-- : group members can read only, by default */
+    m->perm_other = 0;  /* --- : nobody else gets anything by default */
+    m->encrypted  = 0;
+
+    printf("Created '%s' (owner=%s, group=%s, perms=rw-r-----).\n",
+           filename, m->owner, m->group);
+    log_action(current_user->username, "CREATE", filename, 1);
+}
+
+void op_read_file(void) {
+    char filename[MAX_FILENAME];
+    printf("Filename to read: ");
+    if (!fgets(filename, sizeof(filename), stdin)) return;
+    strip_newline(filename);
+
+    FileMeta *m = find_file(filename);
+    if (!m) { printf("No such file.\n"); log_action(current_user->username, "READ", filename, 0); return; }
+
+    if (!has_permission(current_user, m, 'r')) {
+        printf("Permission denied: you don't have read access to '%s'.\n", filename);
+        log_action(current_user->username, "READ", filename, 0);
+        return;
+    }
+
+    if (m->encrypted) {
+        printf("'%s' is currently encrypted. Decrypt it first (option 6) to read it.\n", filename);
+        log_action(current_user->username, "READ", filename, 0);
+        return;
+    }
+
+    char path[MAX_FILENAME + 16];
+    vault_path(filename, path, sizeof(path));
+    FILE *f = fopen(path, "r");
+    if (!f) { printf("Could not open file on disk.\n"); return; }
+
+    printf("--- contents of %s ---\n", filename);
+    char line[MAX_LINE];
+    while (fgets(line, sizeof(line), f)) printf("%s", line);
+    printf("--- end of file ---\n");
+    fclose(f);
+
+    log_action(current_user->username, "READ", filename, 1);
+}
+
+void op_write_file(void) {
+    char filename[MAX_FILENAME];
+    printf("Filename to write/append to: ");
+    if (!fgets(filename, sizeof(filename), stdin)) return;
+    strip_newline(filename);
+
+    FileMeta *m = find_file(filename);
+    if (!m) { printf("No such file.\n"); log_action(current_user->username, "WRITE", filename, 0); return; }
+
+    if (!has_permission(current_user, m, 'w')) {
+        printf("Permission denied: you don't have write access to '%s'.\n", filename);
+        log_action(current_user->username, "WRITE", filename, 0);
+        return;
+    }
+    if (m->encrypted) {
+        printf("'%s' is encrypted. Decrypt it first before writing to it.\n", filename);
+        log_action(current_user->username, "WRITE", filename, 0);
+        return;
+    }
+
+    printf("Enter a line of text to append: ");
+    char line[MAX_LINE];
+    if (!fgets(line, sizeof(line), stdin)) return;
+
+    char path[MAX_FILENAME + 16];
+    vault_path(filename, path, sizeof(path));
+    FILE *f = fopen(path, "a");
+    if (!f) { printf("Could not open file on disk.\n"); return; }
+    fputs(line, f);
+    if (line[strlen(line) - 1] != '\n') fputc('\n', f);
+    fclose(f);
+
+    printf("Appended to '%s'.\n", filename);
+    log_action(current_user->username, "WRITE", filename, 1);
+}
+
+void op_delete_file(void) {
+    char filename[MAX_FILENAME];
+    printf("Filename to delete: ");
+    if (!fgets(filename, sizeof(filename), stdin)) return;
+    strip_newline(filename);
+
+    FileMeta *m = find_file(filename);
+    if (!m) { printf("No such file.\n"); log_action(current_user->username, "DELETE", filename, 0); return; }
+
+    /* Deletion is deliberately stricter than the plain rwx bits: only the
+       owner or a "security" group member can delete a file, no matter
+       what the permission bits say. This mirrors how real systems often
+       add extra guardrails around destructive operations rather than
+       relying purely on the standard permission model. */
+    if (!is_owner_or_admin(current_user, m)) {
+        printf("Permission denied: only the owner or security staff can delete this file.\n");
+        log_action(current_user->username, "DELETE", filename, 0);
+        return;
+    }
+
+    char path[MAX_FILENAME + 16];
+    vault_path(filename, path, sizeof(path));
+    remove(path);
+
+    /* shift everything after this entry down by one to close the gap */
+    int idx = (int)(m - files);
+    for (int i = idx; i < file_count - 1; i++) files[i] = files[i + 1];
+    file_count--;
+
+    printf("Deleted '%s'.\n", filename);
+    log_action(current_user->username, "DELETE", filename, 1);
+}
+
+void op_set_permissions(void) {
+    char filename[MAX_FILENAME];
+    printf("Filename to change permissions on: ");
+    if (!fgets(filename, sizeof(filename), stdin)) return;
+    strip_newline(filename);
+
+    FileMeta *m = find_file(filename);
+    if (!m) { printf("No such file.\n"); return; }
+
+    if (!is_owner_or_admin(current_user, m)) {
+        printf("Permission denied: only the owner or security staff can change permissions.\n");
+        log_action(current_user->username, "CHMOD", filename, 0);
+        return;
+    }
+
+    int po, pg, pu;
+    printf("Enter owner/group/other permission as three numbers 0-7 (e.g. 6 4 0): ");
+    if (scanf("%d %d %d", &po, &pg, &pu) != 3) { while (getchar() != '\n'); return; }
+    while (getchar() != '\n'); /* clear the rest of the line incl. newline */
+
+    m->perm_owner = po & 7;
+    m->perm_group = pg & 7;
+    m->perm_other = pu & 7;
+
+    printf("Updated permissions on '%s' to %d%d%d.\n", filename, m->perm_owner, m->perm_group, m->perm_other);
+    log_action(current_user->username, "CHMOD", filename, 1);
+}
+
+void op_encrypt_file(void) {
+    char filename[MAX_FILENAME];
+    printf("Filename to encrypt: ");
+    if (!fgets(filename, sizeof(filename), stdin)) return;
+    strip_newline(filename);
+
+    FileMeta *m = find_file(filename);
+    if (!m) { printf("No such file.\n"); return; }
+
+    if (!is_owner_or_admin(current_user, m)) {
+        printf("Permission denied: only the owner or security staff can encrypt this file.\n");
+        log_action(current_user->username, "ENCRYPT", filename, 0);
+        return;
+    }
+    if (m->encrypted) { printf("'%s' is already encrypted.\n", filename); return; }
+
+    char path[MAX_FILENAME + 16];
+    vault_path(filename, path, sizeof(path));
+
+    FILE *f = fopen(path, "rb");
+    if (!f) { printf("Could not open file.\n"); return; }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    unsigned char *buf = malloc((size_t)size);
+    fread(buf, 1, (size_t)size, f);
+    fclose(f);
+
+    xor_crypt(buf, (size_t)size, XOR_KEY);
+
+    f = fopen(path, "wb");
+    fwrite(buf, 1, (size_t)size, f);
+    fclose(f);
+    free(buf);
+
+    m->encrypted = 1;
+    printf("'%s' has been encrypted.\n", filename);
+    log_action(current_user->username, "ENCRYPT", filename, 1);
+}
+
+void op_decrypt_file(void) {
+    char filename[MAX_FILENAME];
+    printf("Filename to decrypt: ");
+    if (!fgets(filename, sizeof(filename), stdin)) return;
+    strip_newline(filename);
+
+    FileMeta *m = find_file(filename);
+    if (!m) { printf("No such file.\n"); return; }
+
+    if (!is_owner_or_admin(current_user, m)) {
+        printf("Permission denied: only the owner or security staff can decrypt this file.\n");
+        log_action(current_user->username, "DECRYPT", filename, 0);
+        return;
+    }
+    if (!m->encrypted) { printf("'%s' isn't encrypted.\n", filename); return; }
+
+    char path[MAX_FILENAME + 16];
+    vault_path(filename, path, sizeof(path));
+
+    FILE *f = fopen(path, "rb");
+    if (!f) { printf("Could not open file.\n"); return; }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    unsigned char *buf = malloc((size_t)size);
+    fread(buf, 1, (size_t)size, f);
+    fclose(f);
+
+    xor_crypt(buf, (size_t)size, XOR_KEY);   /* XOR again = decrypt */
+
+    f = fopen(path, "wb");
+    fwrite(buf, 1, (size_t)size, f);
+    fclose(f);
+    free(buf);
+
+    m->encrypted = 0;
+    printf("'%s' has been decrypted.\n", filename);
+    log_action(current_user->username, "DECRYPT", filename, 1);
+}
+
