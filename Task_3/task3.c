@@ -66,3 +66,39 @@
  * normal account that only gets special access to files they own or
  * files whose group matches their own group.
  * -------------------------------------------------------------------*/
+typedef struct {
+    char username[MAX_NAME_LEN];
+    unsigned long password_hash;
+    char group[MAX_NAME_LEN];
+} User;
+
+User users[MAX_USERS] = {
+    {"alice", 0, "security"},
+    {"bob",   0, "staff"},
+    {"carol", 0, "staff"},
+    {"guest", 0, "guest"},
+};
+int user_count = 4;
+
+/* ---------------------------------------------------------------------
+ * File metadata table. The actual bytes live on disk under vault/, this
+ * table just tracks who owns each file, what group it belongs to, and
+ * the rwx permission bits for owner/group/other - same layout idea as
+ * a Unix inode's permission bits, just kept in memory + a metadata file
+ * instead of inside a real filesystem.
+ * -------------------------------------------------------------------*/
+typedef struct {
+    char filename[MAX_FILENAME];
+    char owner[MAX_NAME_LEN];
+    char group[MAX_NAME_LEN];
+    int perm_owner;   /* 0-7, bit 4=read 2=write 1=execute */
+    int perm_group;
+    int perm_other;
+    int encrypted;    /* 1 if currently XOR-encrypted on disk */
+} FileMeta;
+
+FileMeta files[MAX_FILES];
+int file_count = 0;
+
+User *current_user = NULL;
+
