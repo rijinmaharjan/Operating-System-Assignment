@@ -514,3 +514,115 @@ void op_decrypt_file(void) {
     log_action(current_user->username, "DECRYPT", filename, 1);
 }
 
+/* REQUIREMENT 5 (cont.): lets an authorized user actually inspect the
+   audit trail collected by log_action() above */
+void op_view_audit_log(void) {
+    if (strcmp(current_user->group, "security") != 0) {
+        printf("Permission denied: only security staff can view the audit log.\n");
+        log_action(current_user->username, "VIEW_LOG", AUDIT_LOG_FILE, 0);
+        return;
+    }
+    FILE *f = fopen(AUDIT_LOG_FILE, "r");
+    if (!f) { printf("No audit log yet.\n"); return; }
+    printf("--- audit.log ---\n");
+    char line[MAX_LINE];
+    while (fgets(line, sizeof(line), f)) printf("%s", line);
+    fclose(f);
+    log_action(current_user->username, "VIEW_LOG", AUDIT_LOG_FILE, 1);
+}
+
+void op_list_files(void) {
+    printf("\n%-16s %-8s %-10s %-6s %-6s %-6s %-s\n",
+           "Filename", "Owner", "Group", "Owner", "Group", "Other", "Encrypted");
+    printf("---------------------------------------------------------------------\n");
+    for (int i = 0; i < file_count; i++) {
+        FileMeta *m = &files[i];
+        printf("%-16s %-8s %-10s %-6d %-6d %-6d %-s\n",
+               m->filename, m->owner, m->group,
+               m->perm_owner, m->perm_group, m->perm_other,
+               m->encrypted ? "yes" : "no");
+    }
+    if (file_count == 0) printf("(vault is empty)\n");
+}
+
+/* ======================================================================
+ * MENU / MAIN
+ * ===================================================================== */
+
+void print_menu(void) {
+    printf("\n=== Airport Secure Document Vault (logged in as %s [%s]) ===\n",
+           current_user->username, current_user->group);
+    printf(" 1. List files\n");
+    printf(" 2. Create file\n");
+    printf(" 3. Read file\n");
+    printf(" 4. Write/append to file\n");
+    printf(" 5. Delete file\n");
+    printf(" 6. Encrypt file\n");
+    printf(" 7. Decrypt file\n");
+    printf(" 8. Change file permissions\n");
+    printf(" 9. View audit log (security staff only)\n");
+    printf(" 10. Logout\n");
+    printf(" 0. Exit program\n");
+    printf("Choose an option: ");
+}
+
+int main(void) {
+    /* hash the demo passwords once at startup instead of storing them in
+       plaintext anywhere in the running program's data */
+    users[0].password_hash = hash_password("alice123");
+    users[1].password_hash = hash_password("bob123");
+    users[2].password_hash = hash_password("carol123");
+    users[3].password_hash = hash_password("guest123");
+
+    mkdir(VAULT_DIR, 0700); /* ignore the error if it already exists */
+
+    printf("############################################################\n");
+    printf("#     Airport Secure Document Vault System                 #\n");
+    printf("############################################################\n");
+    printf("(demo accounts: alice/alice123 [security], bob/bob123 [staff],\n");
+    printf(" carol/carol123 [staff], guest/guest123 [guest])\n");
+
+    int running = 1;
+    while (running) {
+        current_user = login_prompt();
+        if (!current_user) { running = 0; break; }
+
+        printf("Welcome, %s.\n", current_user->username);
+
+        int logged_in = 1;
+        while (logged_in) {
+            print_menu();
+            int choice;
+            if (scanf("%d", &choice) != 1) { while (getchar() != '\n'); continue; }
+            while (getchar() != '\n'); /* eat the rest of the line */
+
+            switch (choice) {
+                case 1: op_list_files(); break;
+                case 2: op_create_file(); break;
+                case 3: op_read_file(); break;
+                case 4: op_write_file(); break;
+                case 5: op_delete_file(); break;
+                case 6: op_encrypt_file(); break;
+                case 7: op_decrypt_file(); break;
+                case 8: op_set_permissions(); break;
+                case 9: op_view_audit_log(); break;
+                case 10:
+                    printf("Logging out %s.\n", current_user->username);
+                    log_action(current_user->username, "LOGOUT", "-", 1);
+                    logged_in = 0;
+                    break;
+                case 0:
+                    printf("Logging out %s and exiting.\n", current_user->username);
+                    log_action(current_user->username, "LOGOUT", "-", 1);
+                    logged_in = 0;
+                    running = 0;
+                    break;
+                default:
+                    printf("Not a valid option.\n");
+            }
+        }
+    }
+
+    printf("Goodbye.\n");
+    return 0;
+}
