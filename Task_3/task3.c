@@ -47,3 +47,22 @@
 #include <sys/types.h>
 #include <termios.h>
 
+#define MAX_USERS       5
+#define MAX_FILES       50
+#define MAX_NAME_LEN    32
+#define MAX_FILENAME    64
+#define MAX_LINE        512
+#define VAULT_DIR       "vault"
+#define AUDIT_LOG_FILE  "audit.log"
+
+/* Fixed demo XOR key - see the big comment above xor_crypt() for why this
+   is only good enough for a classroom demo, not real security. */
+#define XOR_KEY "AirportVaultDemoKey2026"
+
+/* ---------------------------------------------------------------------
+ * User accounts (hardcoded for this demo - see file header comment)
+ * group "security" = elevated staff who can view the audit log, delete
+ * any file, and manage permissions on anything; everyone else is a
+ * normal account that only gets special access to files they own or
+ * files whose group matches their own group.
+ * -------------------------------------------------------------------*/
