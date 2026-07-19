@@ -34,8 +34,8 @@
  *     reversible if the key is guessed or leaks. A real system would use
  *     something like AES-256-GCM through a proper crypto library.
  *
- * Compile : gcc task_3.c -o task_3
- * Run     : ./task_3
+ * Compile : gcc task3.c -o task3
+ * Run     : ./task3
  */
 
 #include <stdio.h>
