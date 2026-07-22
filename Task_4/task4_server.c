@@ -1,5 +1,5 @@
 /*
- * task_4_server.c
+ * task4_server.c
  * Task 4 - Network Programming and IPC
  * Scenario: Airport Control Tower Server (same airport theme as Tasks 1-3)
  *
@@ -45,8 +45,8 @@
  *
  *   Anything malformed gets:  ERR BADCMD <reason>
  *
- * Compile : gcc -Wall -Wextra -pthread task_4_server.c -o task_4_server
- * Run     : ./task_4_server
+ * Compile : gcc task4_server.c -o task4_server
+ * Run     : ./task4_server
  */
 
 #include <stdio.h>
